@@ -24,18 +24,21 @@ from types import SimpleNamespace
 import pytest
 
 from aiida_yambo.workflows import yamborestart as yamborestart_module
+from aiida_yambo.workflows.utils.helpers_yamborestart import fix_memory
 from aiida_yambo.workflows.yamborestart import YamboRestart
 
 
 class _FakeCalculation:
     """Stand-in for the failed `YamboCalculation` node."""
 
-    def __init__(self, wrote_dbs=False):
+    def __init__(self, wrote_dbs=False, has_gpu=False):
         self.inputs = SimpleNamespace(
             parameters=SimpleNamespace(get_dict=lambda: {'variables': {}}),
         )
         self.outputs = SimpleNamespace(
-            output_parameters=SimpleNamespace(get_dict=lambda: {'yambo_wrote_dbs': wrote_dbs}),
+            output_parameters=SimpleNamespace(
+                get_dict=lambda: {'yambo_wrote_dbs': wrote_dbs, 'has_gpu': has_gpu},
+            ),
         )
         self.exit_status = 500
 
@@ -83,3 +86,21 @@ def test_memory_handler_defaults_omp_threads_when_key_absent():
     handler(fake_self, calculation)
 
     assert fake_self.ctx.inputs.metadata.options.prepend_text == '\nexport OMP_NUM_THREADS=1'
+
+
+def test_fix_memory_defaults_cores_per_mpiproc_when_key_absent():
+    """`fix_memory` itself falls back to 1 core/rank before doubling it.
+
+    A caller whose `resources` carries `num_mpiprocs_per_machine` but no
+    `num_cores_per_mpiproc` (the shape AiiDA's `NodeNumberJobResource`
+    leaves behind when that optional field is never set) must not raise
+    `KeyError` when the memory handler halves the rank count and doubles
+    the thread count per rank.
+    """
+    resources = {'num_machines': 1, 'num_mpiprocs_per_machine': 2}
+    calculation = _FakeCalculation(wrote_dbs=False, has_gpu=False)
+
+    _, new_resources, _ = fix_memory(resources, calculation, calculation.exit_status, max_nodes=1, iteration=1)
+
+    assert new_resources['num_cores_per_mpiproc'] == 2
+    assert new_resources['num_mpiprocs_per_machine'] == 1
